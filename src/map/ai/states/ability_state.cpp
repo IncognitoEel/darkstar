@@ -33,7 +33,7 @@ This file is part of DarkStar-server source code.
 #include "../../utils/battleutils.h"
 #include "../../../common/utils.h"
 
-CAbilityState::CAbilityState(CCharEntity* PEntity, uint16 targid, uint16 abilityid) :
+CAbilityState::CAbilityState(CBattleEntity* PEntity, uint16 targid, uint16 abilityid) :
     CState(PEntity, targid),
     m_PEntity(PEntity)
 {
@@ -50,6 +50,21 @@ CAbilityState::CAbilityState(CCharEntity* PEntity, uint16 targid, uint16 ability
         throw CStateInitException(std::move(m_errorMsg));
     }
     m_PAbility = std::make_unique<CAbility>(*PAbility);
+    m_castTime = PAbility->getCastTime();
+    if (m_castTime > 0s)
+    {
+        action_t action;
+        action.id = PEntity->id;
+        action.actiontype = ACTION_WEAPONSKILL_START;
+        auto& list = action.getNewActionList();
+        list.ActionTargetID = PTarget->id;
+        auto& actionTarget = list.getNewActionTarget();
+        actionTarget.reaction = (REACTION)24;
+        actionTarget.animation = 121;
+        actionTarget.messageID = 326;
+        actionTarget.param = PAbility->getID() + 16;
+        PEntity->loc.zone->PushPacket(PEntity, CHAR_INRANGE_SELF, new CActionPacket(action));
+    }
     m_PEntity->PAI->EventHandler.triggerListener("ABILITY_START", m_PEntity, PAbility);
 }
 
@@ -87,7 +102,7 @@ bool CAbilityState::CanChangeState()
 
 bool CAbilityState::Update(time_point tick)
 {
-    if (!IsCompleted())
+    if (!IsCompleted() && tick > GetEntryTime() + m_castTime)
     {
         if (CanUseAbility())
         {
@@ -99,7 +114,7 @@ bool CAbilityState::Update(time_point tick)
         Complete();
     }
 
-    if (IsCompleted() && tick > GetEntryTime() + m_PAbility->getAnimationTime())
+    if (IsCompleted() && tick > GetEntryTime() + m_castTime + m_PAbility->getAnimationTime())
     {
         m_PEntity->PAI->EventHandler.triggerListener("ABILITY_STATE_EXIT", m_PEntity, m_PAbility.get());
         return true;
@@ -110,54 +125,47 @@ bool CAbilityState::Update(time_point tick)
 
 bool CAbilityState::CanUseAbility()
 {
-    auto PAbility = GetAbility();
-    if (m_PEntity->PRecastContainer->HasRecast(RECAST_ABILITY, PAbility->getRecastId()))
+    if (m_PEntity->objtype == TYPE_PC)
     {
-        m_PEntity->pushPacket(new CMessageBasicPacket(m_PEntity, m_PEntity, 0, 0, MSGBASIC_WAIT_LONGER));
-        return false;
-    }
-    if (m_PEntity->StatusEffectContainer->HasStatusEffect(EFFECT_AMNESIA)) {
-        m_PEntity->pushPacket(new CMessageBasicPacket(m_PEntity, m_PEntity, 0, 0, MSGBASIC_UNABLE_TO_USE_JA2));
-        return false;
-    }
-    std::unique_ptr<CMessageBasicPacket> errMsg;
-    auto PTarget = GetTarget();
-    if (m_PEntity->IsValidTarget(PTarget->targid, PAbility->getValidTarget(), errMsg))
-    {
-        if (m_PEntity != PTarget && distance(m_PEntity->loc.p, PTarget->loc.p) > PAbility->getRange())
+        auto PAbility = GetAbility();
+        auto PChar = static_cast<CCharEntity*>(m_PEntity);
+        if (PChar->PRecastContainer->HasRecast(RECAST_ABILITY, PAbility->getRecastId()))
         {
-            m_PEntity->pushPacket(new CMessageBasicPacket(m_PEntity, PTarget, 0, 0, MSGBASIC_TOO_FAR_AWAY));
+            PChar->pushPacket(new CMessageBasicPacket(PChar, PChar, 0, 0, MSGBASIC_WAIT_LONGER));
             return false;
         }
-        if (PAbility->getID() >= ABILITY_HEALING_RUBY)
+        if (PChar->StatusEffectContainer->HasStatusEffect(EFFECT_AMNESIA)) {
+            PChar->pushPacket(new CMessageBasicPacket(PChar, PChar, 0, 0, MSGBASIC_UNABLE_TO_USE_JA2));
+            return false;
+        }
+        std::unique_ptr<CMessageBasicPacket> errMsg;
+        auto PTarget = GetTarget();
+        if (PChar->IsValidTarget(PTarget->targid, PAbility->getValidTarget(), errMsg))
         {
-            // Blood pact MP costs are stored under animation ID
-            if (m_PEntity->health.mp < PAbility->getAnimationID())
+            if (PChar != PTarget && distance(PChar->loc.p, PTarget->loc.p) > PAbility->getRange())
             {
-                m_PEntity->pushPacket(new CMessageBasicPacket(m_PEntity, PTarget, 0, 0, MSGBASIC_UNABLE_TO_USE_JA));
+                PChar->pushPacket(new CMessageBasicPacket(PChar, PTarget, 0, 0, MSGBASIC_TOO_FAR_AWAY));
                 return false;
             }
+            if (PAbility->getID() >= ABILITY_HEALING_RUBY)
+            {
+                // Blood pact MP costs are stored under animation ID
+                if (PChar->health.mp < PAbility->getAnimationID())
+                {
+                    PChar->pushPacket(new CMessageBasicPacket(PChar, PTarget, 0, 0, MSGBASIC_UNABLE_TO_USE_JA));
+                    return false;
+                }
+            }
+            CBaseEntity* PMsgTarget = PChar;
+            int32 errNo = luautils::OnAbilityCheck(PChar, PTarget, PAbility, &PMsgTarget);
+            if (errNo != 0)
+            {
+                PChar->pushPacket(new CMessageBasicPacket(PChar, PMsgTarget, PAbility->getID() + 16, PAbility->getID(), errNo));
+                return false;
+            }
+            return true;
         }
-        CBaseEntity* PMsgTarget = m_PEntity;
-        int32 errNo = luautils::OnAbilityCheck(m_PEntity, PTarget, PAbility, &PMsgTarget);
-        if (errNo != 0)
-        {
-            m_PEntity->pushPacket(new CMessageBasicPacket(m_PEntity, PMsgTarget, PAbility->getID() + 16, PAbility->getID(), errNo));
-            return false;
-        }
-        // #TODO: needed??
-        //if (PAbility->getValidTarget() == TARGET_ENEMY)
-        //{
-        //    if (!IsMobOwner(PTarget))
-        //    {
-        //        m_PEntity->pushPacket(new CMessageBasicPacket(m_PEntity, m_PEntity, 0, 0, MSGBASIC_ALREADY_CLAIMED));
-
-        //        TransitionBack();
-        //        PAbility = nullptr;
-        //        return;
-        //    }
-        //}
-        return true;
+        return false;
     }
-    return false;
+    return true;
 }

@@ -121,6 +121,7 @@ public:
     int32 addItem(lua_State*);              // Add item to Entity inventory (additem(itemNumber,quantity))
     int32 hasItem(lua_State*);              // Check to see if Entity has item in inventory (hasItem(itemNumber))
     int32 addTempItem(lua_State*);          // Add temp item to Entity Temp inventory
+    int32 delItem(lua_State*);
     int32 getFreeSlotsCount(lua_State*);    // Gets value of free slots in Entity inventory
     int32 createWornItem(lua_State*);       // Update this item in worn item (player:createWornItem(itemid))
     int32 hasWornItem(lua_State*);          // Check if the item is already worn (player:hasWornItem(itemid))
@@ -458,6 +459,7 @@ public:
     int32 setDamage(lua_State*);            // sets a mobs weapon damage
     int32 castSpell(lua_State*);            // forces a mob to cast a spell (parameter = spell ID, otherwise picks a spell from its list)
     int32 useMobAbility(lua_State*);        // forces a mob to use a mobability (parameter = skill ID)
+    int32 useJobAbility(lua_State*);        // forces a job ability use (players/pets only)
     int32 actionQueueEmpty(lua_State*);     // returns whether the action queue is empty or not
     int32 actionQueueAbility(lua_State*);   // returns whether the action is from the action queue or not
 

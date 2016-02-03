@@ -1246,7 +1246,7 @@ namespace charutils
         charutils::BuildingCharSkillsTable(PChar);
         charutils::CalculateStats(PChar);
         charutils::CheckValidEquipment(PChar);
-        PChar->PRecastContainer->ResetAbilities();
+        PChar->PRecastContainer->ChangeJob();
         charutils::BuildingCharAbilityTable(PChar);
         charutils::BuildingCharTraitsTable(PChar);
 
@@ -1257,7 +1257,7 @@ namespace charutils
         charutils::SaveCharStats(PChar);
         charutils::SaveCharJob(PChar, PChar->GetMJob());
         charutils::SaveCharExp(PChar, PChar->GetMJob());
-        charutils::UpdateHealth(PChar);
+        PChar->updatemask |= UPDATE_HP;
 
         PChar->pushPacket(new CCharJobsPacket(PChar));
         PChar->pushPacket(new CCharStatsPacket(PChar));
@@ -1550,6 +1550,7 @@ namespace charutils
                     {
                         PChar->look.ranged = 0;
                     }
+                    PChar->m_Weapons[SLOT_AMMO] = nullptr;
                     UpdateWeaponStyle(PChar, equipSlotID, nullptr);
                 }
                 break;
@@ -1559,6 +1560,7 @@ namespace charutils
                     {
                         PChar->look.ranged = 0;
                     }
+                    PChar->m_Weapons[SLOT_RANGED] = nullptr;
                     PChar->health.tp = 0;
                     BuildingCharWeaponSkills(PChar);
                     UpdateWeaponStyle(PChar, equipSlotID, nullptr);
@@ -2215,7 +2217,7 @@ namespace charutils
 
         bool isInDynamis = PChar->isInDynamis();
 
-        for (auto&& slot : {std::make_tuple(SLOT_MAIN, std::ref(main_ws), std::ref(main_ws_dyn)), 
+        for (auto&& slot : {std::make_tuple(SLOT_MAIN, std::ref(main_ws), std::ref(main_ws_dyn)),
             std::make_tuple(SLOT_RANGED, std::ref(range_ws), std::ref(range_ws_dyn))})
         {
             if (PChar->m_Weapons[std::get<0>(slot)])
@@ -2340,9 +2342,17 @@ namespace charutils
                 if (PAbility->getID() < 496 && PAbility->getID() != ABILITY_PET_COMMANDS && CheckAbilityAddtype(PChar, PAbility))
                 {
                     addAbility(PChar, PAbility->getID());
+                    Charge_t* charge = ability::GetCharge(PChar, PAbility->getRecastId());
+                    auto chargeTime = 0;
+                    auto maxCharges = 0;
+                    if (charge)
+                    {
+                        chargeTime = charge->chargeTime - PChar->PMeritPoints->GetMeritValue((MERIT_TYPE)charge->merit, PChar);
+                        maxCharges = charge->maxCharges;
+                    }
                     if (!PChar->PRecastContainer->Has(RECAST_ABILITY, PAbility->getRecastId()))
                     {
-                        PChar->PRecastContainer->Add(RECAST_ABILITY, PAbility->getRecastId(), 0);
+                        PChar->PRecastContainer->Add(RECAST_ABILITY, PAbility->getRecastId(), 0, chargeTime, maxCharges);
                     }
                 }
             }
@@ -2373,9 +2383,17 @@ namespace charutils
                     if (PAbility->getID() != ABILITY_PET_COMMANDS && CheckAbilityAddtype(PChar, PAbility) && !(PAbility->getAddType() & ADDTYPE_MAIN_ONLY))
                     {
                         addAbility(PChar, PAbility->getID());
+                        Charge_t* charge = ability::GetCharge(PChar, PAbility->getRecastId());
+                        auto chargeTime = 0;
+                        auto maxCharges = 0;
+                        if (charge)
+                        {
+                            chargeTime = charge->chargeTime - PChar->PMeritPoints->GetMeritValue((MERIT_TYPE)charge->merit, PChar);
+                            maxCharges = charge->maxCharges;
+                        }
                         if (!PChar->PRecastContainer->Has(RECAST_ABILITY, PAbility->getRecastId()))
                         {
-                            PChar->PRecastContainer->Add(RECAST_ABILITY, PAbility->getRecastId(), 0);
+                            PChar->PRecastContainer->Add(RECAST_ABILITY, PAbility->getRecastId(), 0, chargeTime, maxCharges);
                         }
                     }
                 }
@@ -2881,36 +2899,6 @@ namespace charutils
     }
 
     /************************************************************************
-    *                                                                       *
-    *  Обновляем MP, HP и TP персонажа                                      *
-    *                                                                       *
-    ************************************************************************/
-
-    void UpdateHealth(CCharEntity* PChar)
-    {
-        DSP_DEBUG_BREAK_IF(PChar->objtype != TYPE_PC);
-
-        PChar->updatemask |= UPDATE_HP;
-
-        if (PChar->PParty != nullptr)
-        {
-            if (PChar->PParty->m_PAlliance == nullptr)
-            {
-                PChar->PParty->PushPacket(PChar->id, PChar->getZone(), new CCharHealthPacket(PChar));
-            }
-            else if (PChar->PParty->m_PAlliance != nullptr)
-            {
-                for (uint8 i = 0; i < PChar->PParty->m_PAlliance->partyList.size(); ++i)
-                {
-                    ((CParty*)PChar->PParty->m_PAlliance->partyList.at(i))->PushPacket(PChar->id, PChar->getZone(), new CCharHealthPacket(PChar));
-                }
-            }
-        }
-
-        PChar->pushPacket(new CCharHealthPacket(PChar));
-    }
-
-    /************************************************************************
     *																		*
     *  Инициализируем таблицу опыта											*
     *																		*
@@ -3070,7 +3058,7 @@ namespace charutils
         PChar->ForAlliance([&pcinzone, &PMob, &minlevel, &maxlevel](CBattleEntity* PMember) {
             if (PMember->getZone() == PMob->getZone() && distance(PMember->loc.p, PMob->loc.p) < 100)
             {
-                if (PMember->PPet != nullptr && PMember->PPet->GetMLevel() > maxlevel && PMember->PPet->objtype != TYPE_PET) 
+                if (PMember->PPet != nullptr && PMember->PPet->GetMLevel() > maxlevel && PMember->PPet->objtype != TYPE_PET)
                 {
                     maxlevel = PMember->PPet->GetMLevel();
                 }
@@ -3389,7 +3377,7 @@ namespace charutils
 
             PChar->loc.zone->PushPacket(PChar, CHAR_INRANGE_SELF, new CMessageDebugPacket(PChar, PChar, PChar->jobs.job[PChar->GetMJob()], 0, 11));
             luautils::OnPlayerLevelDown(PChar);
-            charutils::UpdateHealth(PChar);
+            PChar->updatemask |= UPDATE_HP;
         }
         else
         {
@@ -3515,6 +3503,8 @@ namespace charutils
             }
         }
 
+        PChar->PAI->EventHandler.triggerListener("EXPERIENCE_POINTS", PChar, exp);
+
         // Player levels up
         if ((currentExp + exp) >= GetExpNEXTLevel(PChar->jobs.job[PChar->GetMJob()]) && onLimitMode == false)
         {
@@ -3585,7 +3575,7 @@ namespace charutils
                 PChar->pushPacket(new CCharStatsPacket(PChar));
 
                 luautils::OnPlayerLevelUp(PChar);
-                charutils::UpdateHealth(PChar);
+                PChar->updatemask |= UPDATE_HP;
                 return;
             }
         }
@@ -3599,6 +3589,7 @@ namespace charutils
         {
             PChar->pushPacket(new CMenuMeritPacket(PChar));
         }
+
     }
 
     /************************************************************************

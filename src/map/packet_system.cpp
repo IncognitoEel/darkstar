@@ -1164,7 +1164,7 @@ void SmallPacket0x034(map_session_data_t* session, CCharEntity* PChar, CBasicPac
         // We used to disable Rare/Ex items being added to the container, but that is handled properly else where now
         if (PItem != nullptr && PItem->getID() == itemID && quantity + PItem->getReserve() <= PItem->getQuantity())
         {
-			
+
             PItem->setReserve(quantity);
             // If item count is zero.. remove from container..
 			if (quantity > 0)
@@ -1562,7 +1562,7 @@ void SmallPacket0x04D(map_session_data_t* session, CCharEntity* PChar, CBasicPac
                 {
                     if (!(PItem->getFlag() & ITEM_FLAG_DELIVERYINNER))
                         return;
-                    
+
                     uint32 accid = Sql_GetUIntData(SqlHandle, 1);
                     int32 ret = Sql_Query(SqlHandle, "SELECT COUNT(*) FROM chars WHERE charid = '%u' AND accid = '%u' LIMIT 1;", PChar->id, accid);
                     if (ret == SQL_ERROR || Sql_NextRow(SqlHandle) != SQL_SUCCESS || Sql_GetUIntData(SqlHandle, 0) == 0)
@@ -2405,21 +2405,21 @@ void SmallPacket0x053(map_session_data_t* session, CCharEntity* PChar, CBasicPac
     uint8 count = RBUFB(data, (0x04));
     uint8 type = RBUFB(data, (0x05));
 
-    if (type == 0 && PChar->getStyleLocked()) 
+    if (type == 0 && PChar->getStyleLocked())
     {
         charutils::SetStyleLock(PChar, false);
         charutils::SaveCharLook(PChar);
     }
-    else if (type == 1) 
+    else if (type == 1)
     {
-        // The client sends this when logging in and zoning. 
+        // The client sends this when logging in and zoning.
         PChar->setStyleLocked(true);
     }
-    else if (type == 2) 
+    else if (type == 2)
     {
         PChar->pushPacket(new CMessageStandardPacket(PChar->getStyleLocked() ? 0x10D : 0x10E));
     }
-    else if (type == 3) 
+    else if (type == 3)
     {
         charutils::SetStyleLock(PChar, true);
 
@@ -2455,13 +2455,13 @@ void SmallPacket0x053(map_session_data_t* session, CCharEntity* PChar, CBasicPac
         }
         charutils::SaveCharLook(PChar);
     }
-    else if (type == 4) 
+    else if (type == 4)
     {
         charutils::SetStyleLock(PChar, true);
         charutils::SaveCharLook(PChar);
     }
 
-    if (type != 1 && type != 2) 
+    if (type != 1 && type != 2)
     {
         PChar->pushPacket(new CCharAppearancePacket(PChar));
         PChar->pushPacket(new CCharSyncPacket(PChar));
@@ -2677,6 +2677,10 @@ void SmallPacket0x05E(map_session_data_t* session, CCharEntity* PChar, CBasicPac
                 if (zone == 127)
                 {
                     prevzone = 280;
+                }
+                else if (zone == 125)
+                {
+                    prevzone = PChar->loc.prevzone;
                 }
             }
             PChar->m_moghouseID = 0;
@@ -3340,7 +3344,7 @@ void SmallPacket0x077(map_session_data_t* session, CCharEntity* PChar, CBasicPac
     case 5: //alliance
     {
         if (PChar->PParty && PChar->PParty->m_PAlliance &&
-            PChar->PParty->GetLeader() == PChar && 
+            PChar->PParty->GetLeader() == PChar &&
             PChar->PParty->m_PAlliance->getMainParty() == PChar->PParty)
         {
 			ShowDebug(CL_CYAN"(Alliance)Changing leader to %s\n" CL_RESET, data[0x04]);
@@ -3921,7 +3925,6 @@ void SmallPacket0x0BE(map_session_data_t* session, CCharEntity* PChar, CBasicPac
                 PChar->addHP(PChar->GetMaxHP());
                 PChar->addMP(PChar->GetMaxMP());
                 PChar->pushPacket(new CCharUpdatePacket(PChar));
-                PChar->pushPacket(new CCharHealthPacket(PChar));
                 PChar->pushPacket(new CCharStatsPacket(PChar));
                 PChar->pushPacket(new CCharSkillsPacket(PChar));
                 PChar->pushPacket(new CCharRecastPacket(PChar));
@@ -5016,6 +5019,7 @@ void SmallPacket0x100(map_session_data_t* session, CCharEntity* PChar, CBasicPac
         if ((sjob > 0x00) && (sjob < MAX_JOBTYPE) && (PChar->jobs.unlocked & (1 << sjob)))
         {
             JOBTYPE prevsjob = PChar->GetSJob();
+            PChar->resetPetZoningInfo();
 
             PChar->SetSJob(sjob);
             PChar->SetSLevel(PChar->jobs.job[PChar->GetSJob()]);
@@ -5035,14 +5039,14 @@ void SmallPacket0x100(map_session_data_t* session, CCharEntity* PChar, CBasicPac
             }
 
         }
-        
+
         charutils::SetStyleLock(PChar, false);
         luautils::CheckForGearSet(PChar); // check for gear set on gear change
 
         charutils::BuildingCharSkillsTable(PChar);
         charutils::CalculateStats(PChar);
         charutils::BuildingCharTraitsTable(PChar);
-        PChar->PRecastContainer->ResetAbilities();
+        PChar->PRecastContainer->ChangeJob();
         charutils::BuildingCharAbilityTable(PChar);
         charutils::BuildingCharWeaponSkills(PChar);
 
@@ -5058,12 +5062,12 @@ void SmallPacket0x100(map_session_data_t* session, CCharEntity* PChar, CBasicPac
 
         PChar->health.hp = PChar->GetMaxHP();
         PChar->health.mp = PChar->GetMaxMP();
+        PChar->updatemask |= UPDATE_HP;
 
         charutils::SaveCharStats(PChar);
 
         PChar->pushPacket(new CCharJobsPacket(PChar));
         PChar->pushPacket(new CCharUpdatePacket(PChar));
-        PChar->pushPacket(new CCharHealthPacket(PChar));
         PChar->pushPacket(new CCharStatsPacket(PChar));
         PChar->pushPacket(new CCharSkillsPacket(PChar));
         PChar->pushPacket(new CCharRecastPacket(PChar));
@@ -5113,7 +5117,6 @@ void SmallPacket0x102(map_session_data_t* session, CCharEntity* PChar, CBasicPac
             PChar->pushPacket(new CCharJobExtraPacket(PChar, false));
             PChar->pushPacket(new CCharStatsPacket(PChar));
             PChar->UpdateHealth();
-            PChar->pushPacket(new CCharHealthPacket(PChar));
         }
         else {
             // loop all 20 slots and find which index they are playing with
@@ -5136,7 +5139,6 @@ void SmallPacket0x102(map_session_data_t* session, CCharEntity* PChar, CBasicPac
                     PChar->pushPacket(new CCharJobExtraPacket(PChar, false));
                     PChar->pushPacket(new CCharStatsPacket(PChar));
                     PChar->UpdateHealth();
-                    PChar->pushPacket(new CCharHealthPacket(PChar));
                 }
                 else {
                     ShowDebug("Cannot resolve spell id \n");

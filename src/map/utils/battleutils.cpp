@@ -800,10 +800,6 @@ namespace battleutils
                     break;
             }
 
-            if (PAttacker->objtype == TYPE_PC)
-            {
-                charutils::UpdateHealth((CCharEntity*)PAttacker);
-            }
             if (((CMobEntity*)PDefender)->m_HiPCLvl < PAttacker->GetMLevel())
             {
                 ((CMobEntity*)PDefender)->m_HiPCLvl = PAttacker->GetMLevel();
@@ -1032,7 +1028,7 @@ namespace battleutils
                 Action->addEffectParam = PAttacker->addHP(Action->param);
 
                 if (PChar != nullptr) {
-                    charutils::UpdateHealth(PChar);
+                    PChar->updatemask |= UPDATE_HP;
                 }
             }
             else if (enspell == ENSPELL_AUSPICE && isFirstSwing) {
@@ -1148,7 +1144,7 @@ namespace battleutils
 
                     PAttacker->addHP(Samba);	// does not do any additional drain to targets HP, only a portion of it
                     if (PChar != nullptr) {
-                        charutils::UpdateHealth(PChar);
+                        PChar->updatemask |= UPDATE_HP;
                     }
                 }
                 else if (daze == EFFECT_ASPIR_DAZE)
@@ -1171,7 +1167,7 @@ namespace battleutils
                     Action->addEffectParam = mpDrained;
 
                     if (PChar != nullptr) {
-                        charutils::UpdateHealth(PChar);
+                        PChar->updatemask |= UPDATE_HP;
                     }
                 }
                 else if (daze == EFFECT_HASTE_DAZE)
@@ -1224,7 +1220,7 @@ namespace battleutils
                     Action->addEffectParam = (float)(Action->param * 0.3f);
                     PAttacker->addHP(Action->addEffectParam);
 
-                    charutils::UpdateHealth(PChar);
+                    PChar->updatemask |= UPDATE_HP;
                     return;
 
 
@@ -1986,8 +1982,6 @@ namespace battleutils
             if (giveTPtoAttacker)
             {
                 PAttacker->addTP(tpMultiplier * (baseTp * (1.0f + 0.01f * (float)((PAttacker->getMod(MOD_STORETP) + getStoreTPbonusFromMerit(PAttacker))))));
-                if (PAttacker->objtype == TYPE_PC)
-                    charutils::UpdateHealth((CCharEntity*)PAttacker);
             }
 
             if (giveTPtoVictim)
@@ -1999,7 +1993,6 @@ namespace battleutils
                 if (PDefender->objtype == TYPE_PC)
                 {
                     PDefender->addTP(tpMultiplier * ((baseTp / 3) * sBlowMult * (1.0f + 0.01f * (float)((PDefender->getMod(MOD_STORETP) + getStoreTPbonusFromMerit(PAttacker)))))); //yup store tp counts on hits taken too!
-                    charutils::UpdateHealth((CCharEntity*)PDefender);
                 }
                 else
                     PDefender->addTP(tpMultiplier * ((baseTp + 30) * sBlowMult * (1.0f + 0.01f * (float)PDefender->getMod(MOD_STORETP)))); //subtle blow also reduces the "+30" on mob tp gain
@@ -2115,10 +2108,6 @@ namespace battleutils
         }
         else if (PDefender->objtype == TYPE_MOB)
             ((CMobEntity*)PDefender)->PEnmityContainer->UpdateEnmityFromDamage(PChar, 0);
-
-
-        if (PDefender->objtype == TYPE_PC)
-            charutils::UpdateHealth((CCharEntity*)PDefender);
 
         if (!isRanged)
             PChar->StatusEffectContainer->DelStatusEffectsByFlag(EFFECTFLAG_ATTACK);
@@ -2571,71 +2560,6 @@ namespace battleutils
     bool IsParalyzed(CBattleEntity* PAttacker)
     {
         return (dsprand::GetRandomNumber(100) < dsp_cap(PAttacker->getMod(MOD_PARALYZE) - PAttacker->getMod(MOD_PARALYZERES), 0, 100));
-    }
-
-    /*****************************************************************************
-    Returns true if the Third Eye anticipates the attacks. Must specify various
-    parameters including if the effect should 100% be removed (e.g. in the case of AoE)
-    by setting forceRemove to true. Must also specify the ignore boolean, which is true
-    to ignore the effects of Third Eye (but NOT try to remove).
-    ******************************************************************************/
-    bool IsAnticipated(CBattleEntity* PDefender, bool forceRemove, bool ignore, bool* thirdEyeCounter)
-    {
-        if (ignore) {
-            return false;
-        }
-
-        if (PDefender->GetMJob() != JOB_SAM && PDefender->GetSJob() != JOB_SAM) {
-            //faster check than via hasStatusEffect
-            return false;
-        }
-        if (!PDefender->StatusEffectContainer->HasStatusEffect(EFFECT_THIRD_EYE)) {
-            return false;
-        }
-
-        CStatusEffect* effect = PDefender->StatusEffectContainer->GetStatusEffect(EFFECT_THIRD_EYE, 0);
-        if (effect == nullptr) { //shouldn't occur but checking anyway
-            return false;
-        }
-        if (forceRemove) {
-            PDefender->StatusEffectContainer->DelStatusEffect(EFFECT_THIRD_EYE);
-            return false;
-        }
-
-        //power stores how many times this effect has anticipated
-        uint8 pastAnticipations = effect->GetPower();
-
-        if (pastAnticipations > 7) {
-            //max 7 anticipates!
-            PDefender->StatusEffectContainer->DelStatusEffect(EFFECT_THIRD_EYE);
-            return false;
-        }
-
-        bool hasSeigan = PDefender->StatusEffectContainer->HasStatusEffect(EFFECT_SEIGAN, 0);
-
-        if (!hasSeigan && pastAnticipations == 0) {
-            PDefender->StatusEffectContainer->DelStatusEffect(EFFECT_THIRD_EYE);
-            return true;
-        }
-        else if (!hasSeigan) {
-            PDefender->StatusEffectContainer->DelStatusEffect(EFFECT_THIRD_EYE);
-            return false;
-        }
-        else { //do have seigan, decay anticipations correctly (guesstimated)
-            //5-6 anticipates is a 'lucky' streak, going to assume 15% decay per proc, with a 100% base w/ Seigan
-            if (dsprand::GetRandomNumber(100) < (100 - (pastAnticipations * 15))) {
-                //increment power and don't remove
-                effect->SetPower(effect->GetPower() + 1);
-                //chance to counter - 25% base
-                if (dsprand::GetRandomNumber(100) < 25 + PDefender->getMod(MOD_AUGMENTS_THIRD_EYE))
-                    *thirdEyeCounter = true;
-                return true;
-            }
-            PDefender->StatusEffectContainer->DelStatusEffect(EFFECT_THIRD_EYE);
-            return false;
-        }
-
-        return false;
     }
 
     /************************************************************************
@@ -3255,8 +3179,6 @@ namespace battleutils
                     PDefender->animation = ANIMATION_NONE;
                     PDefender->updatemask |= UPDATE_HP;
                 }
-
-                charutils::UpdateHealth((CCharEntity*)PDefender);
             }
             break;
 
@@ -4335,10 +4257,11 @@ namespace battleutils
         return damage;
     }
 
-    void HandleIssekiganEnmityBonus(CBattleEntity* PDefender, CMobEntity* PAttacker) {
-        if (PDefender->StatusEffectContainer->HasStatusEffect(EFFECT_ISSEKIGAN)) {
+    void HandleIssekiganEnmityBonus(CBattleEntity* PDefender, CBattleEntity* PAttacker) {
+        if (PAttacker->objtype == TYPE_MOB &&
+             PDefender->StatusEffectContainer->HasStatusEffect(EFFECT_ISSEKIGAN)) {
             // Issekigan is Known to Grant 300 CE per parry, but unknown how it effects VE (per bgwiki). So VE is left alone for now.
-            PAttacker->PEnmityContainer->UpdateEnmity(PDefender, 300, 0, false);
+            static_cast<CMobEntity*>(PAttacker)->PEnmityContainer->UpdateEnmity(PDefender, 300, 0, false);
         }
     }
 
@@ -4808,7 +4731,7 @@ namespace battleutils
                 // Restores some Job Abilities (does not restore One Hour Abilities)
                 for (uint8 i = RecastsToDelete; i > 0; --i)
                 {
-                    if (PTarget->PRecastContainer->GetRecastList(RECAST_ABILITY)->at(i - 1)->ID != 0)
+                    if (PTarget->PRecastContainer->GetRecastList(RECAST_ABILITY)->at(i - 1).ID != 0)
                     {
                         PTarget->PRecastContainer->DeleteByIndex(RECAST_ABILITY, i - 1);
                     }
@@ -4824,7 +4747,7 @@ namespace battleutils
                 // Restores some Job Abilities (does not restore One Hour Abilities), 100% TP Restore
                 for (uint8 i = RecastsToDelete; i > 0; --i)
                 {
-                    if (PTarget->PRecastContainer->GetRecastList(RECAST_ABILITY)->at(i - 1)->ID != 0)
+                    if (PTarget->PRecastContainer->GetRecastList(RECAST_ABILITY)->at(i - 1).ID != 0)
                     {
                         PTarget->PRecastContainer->DeleteByIndex(RECAST_ABILITY, i - 1);
                     }
@@ -4842,7 +4765,7 @@ namespace battleutils
                 // Restores some Job Abilities and One Hour Abilities (Not Wild Card though), 50% MP Restore
                 for (uint8 i = RecastsToDelete; i > 0; --i)
                 {
-                    if (PTarget->PRecastContainer->GetRecastList(RECAST_ABILITY)->at(i - 1)->ID != 0)
+                    if (PTarget->PRecastContainer->GetRecastList(RECAST_ABILITY)->at(i - 1).ID != 0)
                     {
                         PTarget->PRecastContainer->DeleteByIndex(RECAST_ABILITY, i - 1);
                     }
@@ -5348,25 +5271,25 @@ namespace battleutils
         return tp;
     }
 
-    bool RemoveAmmo(CCharEntity* PChar)
+    bool RemoveAmmo(CCharEntity* PChar, int quantity)
     {
         CItemWeapon* PItem = (CItemWeapon*)PChar->getEquip(SLOT_AMMO);
 
         if (PItem)
         {
-            if ((PItem->getQuantity() - 1) < 1) // ammo will run out after this shot, make sure we remove it from equip
+            if ((PItem->getQuantity() - quantity) < 1)
             {
                 uint8 slot = PChar->equip[SLOT_AMMO];
                 uint8 loc = PChar->equipLoc[SLOT_AMMO];
                 charutils::UnequipItem(PChar, SLOT_AMMO);
                 charutils::SaveCharEquip(PChar);
-                charutils::UpdateItem(PChar, loc, slot, -1);
+                charutils::UpdateItem(PChar, loc, slot, -quantity);
                 PChar->pushPacket(new CInventoryFinishPacket());
                 return true;
             }
             else
             {
-                charutils::UpdateItem(PChar, PChar->equipLoc[SLOT_AMMO], PChar->equip[SLOT_AMMO], -1);
+                charutils::UpdateItem(PChar, PChar->equipLoc[SLOT_AMMO], PChar->equip[SLOT_AMMO], -quantity);
                 PChar->pushPacket(new CInventoryFinishPacket());
                 return false;
             }

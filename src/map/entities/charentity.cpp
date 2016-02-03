@@ -448,9 +448,8 @@ void CCharEntity::PostTick()
     if (m_EquipSwap)
     {
         pushPacket(new CCharAppearancePacket(this));
-        pushPacket(new CCharUpdatePacket(this));
 
-        pushPacket(new CCharHealthPacket(this));
+        updatemask |= UPDATE_HP;
         m_EquipSwap = false;
     }
     if (ReloadParty())
@@ -478,6 +477,13 @@ void CCharEntity::PostTick()
         if (isCharmed)
         {
             pushPacket(new CCharPacket(this, ENTITY_UPDATE, updatemask));
+        }
+        if (updatemask & UPDATE_HP)
+        {
+            ForAlliance([&](auto PEntity)
+            {
+                static_cast<CCharEntity*>(PEntity)->pushPacket(new CCharHealthPacket(this));
+            });
         }
         pushPacket(new CCharUpdatePacket(this));
         updatemask = 0;
@@ -512,7 +518,8 @@ bool CCharEntity::ValidTarget(CBattleEntity* PInitiator, uint8 targetFlags)
         return true;
     }
     if ((targetFlags & TARGET_PLAYER_PARTY) &&
-        (PParty && PInitiator->PParty == PParty))
+        ((PParty && PInitiator->PParty == PParty) ||
+        PInitiator->PMaster && PInitiator->PMaster->PParty == PParty))
     {
         return true;
     }
@@ -720,17 +727,17 @@ void CCharEntity::OnWeaponSkillFinished(CWeaponSkillState& state, action_t& acti
             uint16 tpHitsLanded;
             uint16 extraHitsLanded;
             int32 damage;
-            std::tie(damage, tpHitsLanded, extraHitsLanded) = luautils::OnUseWeaponSkill(this, PTarget, PWeaponSkill, tp, primary);
 
             actionTarget.reaction = REACTION_NONE;
             actionTarget.speceffect = SPECEFFECT_NONE;
             actionTarget.animation = PWeaponSkill->getAnimationId();
             actionTarget.messageID = 0;
+            std::tie(damage, tpHitsLanded, extraHitsLanded) = luautils::OnUseWeaponSkill(this, PTarget, PWeaponSkill, tp, primary, action);
 
             if (!battleutils::isValidSelfTargetWeaponskill(PWeaponSkill->getID()))
             {
                 actionTarget.reaction = (tpHitsLanded || extraHitsLanded ? REACTION_HIT : REACTION_EVADE);
-                actionTarget.speceffect = (damage > 0 ? SPECEFFECT_RECOIL : SPECEFFECT_NONE);
+                actionTarget.speceffect = (SPECEFFECT)((damage > 0 ? SPECEFFECT_RECOIL : SPECEFFECT_NONE) | actionTarget.speceffect);
 
                 if (actionTarget.reaction == REACTION_EVADE)
                     actionTarget.messageID = primary ? 188 : 282; //but misses
@@ -823,7 +830,6 @@ void CCharEntity::OnWeaponSkillFinished(CWeaponSkillState& state, action_t& acti
         loc.zone->PushPacket(this, CHAR_INRANGE_SELF, new CMessageBasicPacket(this, this, 0, 0, MSGBASIC_TOO_FAR_AWAY));
     }
     PAI->EventHandler.triggerListener("WEAPONSKILL_USE", this, PWeaponSkill->getID());
-    charutils::UpdateHealth(this);
 }
 
 void CCharEntity::OnAbility(CAbilityState& state, action_t& action)
@@ -974,7 +980,7 @@ m_ActionList.push_back(Action);
         action.actionid = PAbility->getID() + 16;
 
         // #TODO: get rid of this to script, too
-        if (PAbility->isAvatarAbility())
+        if (PAbility->isPetAbility())
         {
             if (PPet) //is a bp - dont display msg and notify pet
             {
@@ -998,8 +1004,6 @@ m_ActionList.push_back(Action);
                 //#TODO: probably needs to be in a script, since the pet abilities actually have their own IDs
                 if (PAbility->getValidTarget() == TARGET_SELF) { PTarget = PPet; }
                 PPet->PAI->MobSkill(PTarget->targid, PAbility->getMobSkillID());
-
-                charutils::UpdateHealth(this);
             }
         }
         //#TODO: make this generic enough to not require an if
@@ -1193,36 +1197,7 @@ m_ActionList.push_back(Action);
 
             state.ApplyEnmity();
         }
-
-        // #TODO: delete ammo from script
-
-        //if (PAbility->getID() >= ABILITY_FIRE_SHOT && PAbility->getID() <= ABILITY_DARK_SHOT)
-        //{
-        //    CItemContainer* inventory = getStorage(LOC_INVENTORY);
-        //    uint8 slotID = inventory->SearchItem(2176 + PAbility->getID() - ABILITY_FIRE_SHOT); //Elemental Card
-
-        //    if (slotID != ERROR_SLOTID)
-        //    {
-        //        charutils::UpdateItem(this, LOC_INVENTORY, slotID, -1);
-        //    }
-        //    else
-        //    {
-        //        slotID = inventory->SearchItem(2974); //Trump Card
-        //        DSP_DEBUG_BREAK_IF(slotID == ERROR_SLOTID);
-        //        charutils::UpdateItem(this, LOC_INVENTORY, slotID, -1);
-        //    }
-        //    this->pushPacket(new CInventoryFinishPacket());
-        //}
-
-        uint32 chargeTime = 0;
-        uint8 maxCharges = 0;
-        Charge_t* charge = ability::GetCharge(this, PAbility->getRecastId());
-        if (charge != nullptr)
-        {
-            chargeTime = charge->chargeTime;
-            maxCharges = charge->maxCharges;
-        }
-        PRecastContainer->Add(RECAST_ABILITY, PAbility->getRecastId(), action.recast, chargeTime, maxCharges);
+        PRecastContainer->Add(RECAST_ABILITY, PAbility->getRecastId(), action.recast);
         pushPacket(new CCharRecastPacket(this));
 
         //#TODO: refactor
@@ -1276,6 +1251,7 @@ void CCharEntity::OnRangedAttack(CRangeState& state, action_t& action)
     uint8 shadowsTaken = 0;
     uint8 hitCount = 1;			// 1 hit by default
     uint8 realHits = 0;			// to store the real number of hit for tp multipler
+    auto ammoConsumed = 0;
     bool hitOccured = false;	// track if player hit mob at all
     bool isSange = false;
     bool isBarrage = StatusEffectContainer->HasStatusEffect(EFFECT_BARRAGE, 0);
@@ -1292,14 +1268,14 @@ void CCharEntity::OnRangedAttack(CRangeState& state, action_t& action)
     }
 
     // loop for barrage hits, if a miss occurs, the loop will end
-    for (uint8 i = 0; i < hitCount; ++i)
+    for (uint8 i = 1; i <= hitCount; ++i)
     {
         if (PTarget->StatusEffectContainer->HasStatusEffect(EFFECT_PERFECT_DODGE, 0))
         {
             actionTarget.messageID = 32;
             actionTarget.reaction = REACTION_EVADE;
             actionTarget.speceffect = SPECEFFECT_NONE;
-            i = hitCount; // end barrage, shot missed
+            hitCount = i; // end barrage, shot missed
         }
         else if (dsprand::GetRandomNumber(100) < battleutils::GetRangedHitRate(this, PTarget, isBarrage)) // hit!
         {
@@ -1366,7 +1342,7 @@ void CCharEntity::OnRangedAttack(CRangeState& state, action_t& action)
 
             battleutils::ClaimMob(PTarget, this);
 
-            i = hitCount; // end barrage, shot missed
+            hitCount = i; // end barrage, shot missed
         }
 
         // check for recycle chance
@@ -1385,8 +1361,9 @@ void CCharEntity::OnRangedAttack(CRangeState& state, action_t& action)
 
         if (PAmmo != nullptr && dsprand::GetRandomNumber(100) > recycleChance)
         {
+            ++ammoConsumed;
             TrackArrowUsageForScavenge(PAmmo);
-            if (battleutils::RemoveAmmo(this))
+            if (PAmmo->getQuantity() == i)
             {
                 hitCount = i;
             }
@@ -1454,6 +1431,7 @@ void CCharEntity::OnRangedAttack(CRangeState& state, action_t& action)
         StatusEffectContainer->DelStatusEffect(EFFECT_SANGE);
     }
 
+    battleutils::RemoveAmmo(this, ammoConsumed);
     // only remove detectables
     StatusEffectContainer->DelStatusEffectsByFlag(EFFECTFLAG_DETECTABLE);
 
@@ -1557,8 +1535,6 @@ void CCharEntity::OnRaise()
         actionTarget.speceffect = SPECEFFECT_RAISE;
 
         loc.zone->PushPacket(this, CHAR_INRANGE_SELF, new CActionPacket(action));
-
-        charutils::UpdateHealth(this);
 
         uint8 mLevel = (m_LevelRestriction != 0 && m_LevelRestriction < GetMLevel()) ? m_LevelRestriction : GetMLevel();
         uint16 expLost = mLevel <= 67 ? (charutils::GetExpNEXTLevel(mLevel) * 8) / 100 : 2400;
